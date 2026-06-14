@@ -73,6 +73,7 @@ ament_index_register_resource(cuapriltags CONTENT share/${PROJECT_NAME}/cuaprilt
 
 # Dependencies
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+find_package(magic_enum REQUIRED)
 find_package(vpi REQUIRED)
 find_package(yaml-cpp)
 
@@ -90,6 +91,7 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 )
 target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
+  magic_enum::magic_enum
   vpi
   yaml-cpp
 )
@@ -134,4 +136,5 @@ ament_index_get_resource(ISAAC_ROS_COMMON_CMAKE_PATH isaac_ros_common_cmake_path
 include("${ISAAC_ROS_COMMON_CMAKE_PATH}/isaac_ros_common-version-info.cmake")
 generate_version_info(${PROJECT_NAME})
 
+ament_export_dependencies(magic_enum)
 ament_auto_package(INSTALL_TO_SHARE config)
