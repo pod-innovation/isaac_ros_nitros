@@ -153,9 +153,17 @@ void allocate_video_buffer(
       allocate_video_buffer_no_padding<VideoFormat::GXF_VIDEO_FORMAT_NV24>(
         source.width, source.height, video_buff, allocator_handle);
       break;
+    case VideoFormat::GXF_VIDEO_FORMAT_NV24_ER:
+      allocate_video_buffer_no_padding<VideoFormat::GXF_VIDEO_FORMAT_NV24_ER>(
+        source.width, source.height, video_buff, allocator_handle);
+      break;
 
     case VideoFormat::GXF_VIDEO_FORMAT_NV12:
       allocate_video_buffer_no_padding<VideoFormat::GXF_VIDEO_FORMAT_NV12>(
+        source.width, source.height, video_buff, allocator_handle);
+      break;
+    case VideoFormat::GXF_VIDEO_FORMAT_NV12_ER:
+      allocate_video_buffer_no_padding<VideoFormat::GXF_VIDEO_FORMAT_NV12_ER>(
         source.width, source.height, video_buff, allocator_handle);
       break;
     case VideoFormat::GXF_VIDEO_FORMAT_RGB32:
@@ -405,15 +413,56 @@ void rclcpp::TypeAdapter<nitros::NitrosImage, sensor_msgs::msg::Image>::convert_
   auto video_buffer_info = gxf_video_buffer.value()->video_frame_info();
 
   // Copy data from Host to Device
-  auto width = get_step_size(video_buffer_info);
-  const cudaError_t cuda_error = cudaMemcpy2D(
-    gxf_video_buffer.value()->pointer(),
-    video_buffer_info.color_planes[0].stride,
-    source.data.data(),
-    source.step,
-    width,
-    video_buffer_info.height,
-    cudaMemcpyHostToDevice);
+  const bool is_nv12 =
+    video_buffer_info.color_format == VideoFormat::GXF_VIDEO_FORMAT_NV12 ||
+    video_buffer_info.color_format == VideoFormat::GXF_VIDEO_FORMAT_NV12_ER;
+  const bool is_nv24 =
+    video_buffer_info.color_format == VideoFormat::GXF_VIDEO_FORMAT_NV24 ||
+    video_buffer_info.color_format == VideoFormat::GXF_VIDEO_FORMAT_NV24_ER;
+  cudaError_t cuda_error = cudaSuccess;
+
+  if (is_nv12 || is_nv24) {
+    if (video_buffer_info.color_planes.size() < 2) {
+      throw std::runtime_error("[convert_to_custom] NV image requires two color planes.");
+    }
+
+    uint8_t * dst_y = gxf_video_buffer.value()->pointer();
+    uint8_t * dst_uv = dst_y + video_buffer_info.color_planes[0].size;
+    const uint8_t * src_y = source.data.data();
+    const uint8_t * src_uv = source.data.data() + source.step * source.height;
+    const size_t y_width_bytes = source.width;
+    const size_t uv_width_bytes = is_nv12 ? source.width : source.width * 2;
+    const size_t uv_height = is_nv12 ? source.height / 2 : source.height;
+
+    cuda_error = cudaMemcpy2D(
+      dst_y,
+      video_buffer_info.color_planes[0].stride,
+      src_y,
+      source.step,
+      y_width_bytes,
+      source.height,
+      cudaMemcpyHostToDevice);
+    if (cuda_error == cudaSuccess) {
+      cuda_error = cudaMemcpy2D(
+        dst_uv,
+        video_buffer_info.color_planes[1].stride,
+        src_uv,
+        source.step,
+        uv_width_bytes,
+        uv_height,
+        cudaMemcpyHostToDevice);
+    }
+  } else {
+    auto width = get_step_size(video_buffer_info);
+    cuda_error = cudaMemcpy2D(
+      gxf_video_buffer.value()->pointer(),
+      video_buffer_info.color_planes[0].stride,
+      source.data.data(),
+      source.step,
+      width,
+      video_buffer_info.height,
+      cudaMemcpyHostToDevice);
+  }
 
   if (cuda_error != cudaSuccess) {
     std::stringstream error_msg;
