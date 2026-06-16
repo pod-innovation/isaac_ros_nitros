@@ -15,6 +15,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,8 +41,22 @@ constexpr int NUM_COFF_PLUMB_BOB = 5;
 namespace
 {
 using DistortionType = nvidia::gxf::DistortionType;
+
+bool IsPlumbBobPolynomial(const nvidia::gxf::CameraModel & camera_model)
+{
+  return camera_model.distortion_type == DistortionType::Polynomial &&
+         std::all_of(
+    camera_model.distortion_coefficients.begin() + 3,
+    camera_model.distortion_coefficients.begin() + 6,
+    [](const auto & value) {return value == 0.0f;});
+}
+
 const std::unordered_map<std::string, DistortionType> g_ros_to_gxf_distortion_model({
-    {"plumb_bob", DistortionType::Brown},
+    // The VPI tensor operator used by isaac_ros_image_proc::RectifyNode does not
+    // generate warp maps for CameraDistortionType::Brown. Polynomial with k4-k6
+    // set to zero represents the ROS plumb_bob coefficients and uses the VPI
+    // polynomial lens distortion path.
+    {"plumb_bob", DistortionType::Polynomial},
     {"rational_polynomial", DistortionType::Polynomial},
     {"equidistant", DistortionType::FisheyeEquidistant}
   });
@@ -156,9 +171,8 @@ void copy_ros_to_gxf_camera_info(
     raw_gxf_camera_model.value()->distortion_coefficients.data(), 0,
     sizeof(raw_gxf_camera_model.value()->distortion_coefficients));
 
-  // If the distortion model is "Brown", check if all the distortion parameters are zero
-  // If yes, then set the distortion type to "Perspective"
-  if (distortion->second == DistortionType::Brown && source.d.size() == NUM_COFF_PLUMB_BOB) {
+  // Treat zero-distortion plumb_bob as Perspective so downstream consumers see it as rectified.
+  if (source.distortion_model == "plumb_bob" && source.d.size() == NUM_COFF_PLUMB_BOB) {
     if (std::all_of(
         source.d.begin(), source.d.end(),
         [](const auto & value) {return value == 0;}))
@@ -292,9 +306,10 @@ void rclcpp::TypeAdapter<
   destination.height = raw_gxf_camera_model.value()->dimensions.y;
   destination.width = raw_gxf_camera_model.value()->dimensions.x;
 
+  const bool is_plumb_bob_polynomial = IsPlumbBobPolynomial(raw_gxf_camera_model.value());
   const auto distortion = g_gxf_to_ros_distortion_model.find(
     raw_gxf_camera_model.value()->distortion_type);
-  if (distortion == std::end(g_gxf_to_ros_distortion_model)) {
+  if (!is_plumb_bob_polynomial && distortion == std::end(g_gxf_to_ros_distortion_model)) {
     std::stringstream error_msg;
     error_msg <<
       "[convert_to_ros_message] Unsupported distortion model from gxf [" <<
@@ -302,23 +317,34 @@ void rclcpp::TypeAdapter<
     RCLCPP_ERROR(
       rclcpp::get_logger("NitrosCameraInfo"), error_msg.str().c_str());
     throw std::runtime_error(error_msg.str().c_str());
+  } else if (is_plumb_bob_polynomial) {
+    destination.distortion_model = "plumb_bob";
   } else {
     destination.distortion_model = distortion->second;
   }
 
   if (raw_gxf_camera_model.value()->distortion_type == DistortionType::Polynomial) {
-    // Resize d buffer to the right size
-    destination.d.resize(
-      sizeof(raw_gxf_camera_model.value()->distortion_coefficients) /
-      sizeof(float));
-    destination.d[0] = raw_gxf_camera_model.value()->distortion_coefficients[0];
-    destination.d[1] = raw_gxf_camera_model.value()->distortion_coefficients[1];
-    destination.d[2] = raw_gxf_camera_model.value()->distortion_coefficients[6];
-    destination.d[3] = raw_gxf_camera_model.value()->distortion_coefficients[7];
-    destination.d[4] = raw_gxf_camera_model.value()->distortion_coefficients[2];
-    destination.d[5] = raw_gxf_camera_model.value()->distortion_coefficients[3];
-    destination.d[6] = raw_gxf_camera_model.value()->distortion_coefficients[4];
-    destination.d[7] = raw_gxf_camera_model.value()->distortion_coefficients[5];
+    if (is_plumb_bob_polynomial) {
+      destination.d.resize(NUM_COFF_PLUMB_BOB);
+      destination.d[0] = raw_gxf_camera_model.value()->distortion_coefficients[0];
+      destination.d[1] = raw_gxf_camera_model.value()->distortion_coefficients[1];
+      destination.d[2] = raw_gxf_camera_model.value()->distortion_coefficients[6];
+      destination.d[3] = raw_gxf_camera_model.value()->distortion_coefficients[7];
+      destination.d[4] = raw_gxf_camera_model.value()->distortion_coefficients[2];
+    } else {
+      // Resize d buffer to the right size
+      destination.d.resize(
+        sizeof(raw_gxf_camera_model.value()->distortion_coefficients) /
+        sizeof(float));
+      destination.d[0] = raw_gxf_camera_model.value()->distortion_coefficients[0];
+      destination.d[1] = raw_gxf_camera_model.value()->distortion_coefficients[1];
+      destination.d[2] = raw_gxf_camera_model.value()->distortion_coefficients[6];
+      destination.d[3] = raw_gxf_camera_model.value()->distortion_coefficients[7];
+      destination.d[4] = raw_gxf_camera_model.value()->distortion_coefficients[2];
+      destination.d[5] = raw_gxf_camera_model.value()->distortion_coefficients[3];
+      destination.d[6] = raw_gxf_camera_model.value()->distortion_coefficients[4];
+      destination.d[7] = raw_gxf_camera_model.value()->distortion_coefficients[5];
+    }
   } else if (raw_gxf_camera_model.value()->distortion_type == DistortionType::Brown) {
     // Resize d buffer to the right size
     destination.d.resize(NUM_COFF_PLUMB_BOB);
