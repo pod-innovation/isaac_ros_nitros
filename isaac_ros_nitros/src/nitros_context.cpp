@@ -263,11 +263,15 @@ void NitrosContext::preLoadGraphSetParameter(
   const std::string & value
 )
 {
-  graph_param_override_string_list_.push_back(
-    graph_namespace_ + "_" + entity_name +
-    "/" + component_name +
-    "/" + parameter_name +
-    "=" + value);
+  const std::string raw_override =
+    entity_name + "/" + component_name + "/" + parameter_name + "=" + value;
+
+  graph_param_override_string_list_.push_back(raw_override);
+
+  if (!graph_namespace_.empty()) {
+    graph_param_override_string_list_.push_back(
+      graph_namespace_ + "_" + raw_override);
+  }
 }
 
 gxf_result_t NitrosContext::loadExtension(
